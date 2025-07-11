@@ -37,6 +37,11 @@ public class DungeonGenerator : MonoBehaviour
     [Range(0.05f, 0.2f)] public float chestSpawnChance = 0.1f;
     [Range(1, 5)] public int maxEnemiesPerRoom = 3;
 
+    [Header("Decoration Prefabs")]
+    public GameObject[] decorationPrefabs; // Префабы декораций
+    [Range(0.01f, 0.1f)] public float decorationPrefabDensity = 0.05f; // Плотность префабов
+    public float minDecorationDistance = 1.5f; // Минимальное расстояние между декорациями
+
     [Header("References")]
     public Tilemap floorMap;
     public Tilemap wallMap;
@@ -48,6 +53,7 @@ public class DungeonGenerator : MonoBehaviour
     private List<RoomConnection> connections = new List<RoomConnection>();
     private List<GameObject> spawnedObjects = new List<GameObject>();
     private Room bossRoom;
+    private List<Vector2> decorationPositions = new List<Vector2>(); // Позиции всех декораций
 
     private const int MAX_BRANCH_DEPTH = 2;
     private static readonly Vector2Int[] cardinalDirections = {
@@ -63,9 +69,10 @@ public class DungeonGenerator : MonoBehaviour
         GenerateCorridors();
         AddRoomsToFloor();
         AddWalls();
-        AddDecorations();
+        AddTileDecorations();
         PlaceLights();
         PlaceEnemiesAndChests();
+        PlaceDecorationPrefabs(); // Генерация префабных декораций
         SpawnPlayer();
         SpawnBoss();
     }
@@ -85,7 +92,6 @@ public class DungeonGenerator : MonoBehaviour
             bool roomCreated = false;
             int attempts = 10;
 
-            // Гарантированное создание комнаты босса
             while (!roomCreated && attempts > 0)
             {
                 Vector2Int direction = GetWeightedDirection(currentRoom.position, i, roomCount, false);
@@ -108,10 +114,8 @@ public class DungeonGenerator : MonoBehaviour
                 attempts--;
             }
 
-            // Если не удалось создать, используем резервный метод
             if (!roomCreated && isBossRoom)
             {
-                // Создаем комнату босса в безопасном направлении
                 Vector2Int newPos = currentRoom.position + Vector2Int.up * (bossRoomSize + corridorWidth + 10);
                 newRoom = CreateRoom(newPos, true);
                 rooms.Add(newRoom);
@@ -343,7 +347,7 @@ public class DungeonGenerator : MonoBehaviour
         }
     }
 
-    private void AddDecorations()
+    private void AddTileDecorations()
     {
         foreach (var position in floorPositions)
         {
@@ -396,7 +400,6 @@ public class DungeonGenerator : MonoBehaviour
             }
         }
 
-        // Гарантированное освещение для комнаты босса
         if (bossRoom != null)
         {
             for (int i = 0; i < 3; i++)
@@ -417,8 +420,8 @@ public class DungeonGenerator : MonoBehaviour
                 if (lightComp != null)
                 {
                     lightComp.color = Color.red;
-                    lightComp.intensity = Random.Range(2f, 4f);
-                    lightComp.pointLightOuterRadius = Random.Range(5f, 17f);
+                    lightComp.intensity = Random.Range(1.5f, 2f);
+                    lightComp.pointLightOuterRadius = Random.Range(15f, 27f);
                 }
             }
         }
@@ -435,6 +438,7 @@ public class DungeonGenerator : MonoBehaviour
                 Vector2 chestPos = GetRandomPositionInRoom(room);
                 GameObject chest = Instantiate(chestPrefab, chestPos, Quaternion.identity);
                 spawnedObjects.Add(chest);
+                decorationPositions.Add(chestPos); // Запоминаем позицию
             }
 
             if (!room.isBoss && Random.value < enemySpawnChance)
@@ -449,9 +453,79 @@ public class DungeonGenerator : MonoBehaviour
                         Quaternion.identity
                     );
                     spawnedObjects.Add(enemy);
+                    decorationPositions.Add(enemyPos); // Запоминаем позицию
                 }
             }
         }
+    }
+
+    private void PlaceDecorationPrefabs()
+    {
+        if (decorationPrefabs == null || decorationPrefabs.Length == 0) return;
+
+        foreach (Room room in rooms)
+        {
+            // Пропускаем стартовую комнату
+            if (room.isStart) continue;
+
+            // Рассчитываем количество декораций для комнаты
+            int decorationCount = Mathf.RoundToInt(room.width * room.height * decorationPrefabDensity);
+
+            for (int i = 0; i < decorationCount; i++)
+            {
+                Vector2 position = GetRandomPositionInRoom(room);
+
+                // Проверяем, что позиция подходит
+                if (IsPositionValidForDecoration(position))
+                {
+                    GameObject prefab = decorationPrefabs[Random.Range(0, decorationPrefabs.Length)];
+                    GameObject decoration = Instantiate(prefab, position, Quaternion.identity);
+
+
+                    spawnedObjects.Add(decoration);
+                    decorationPositions.Add(position); // Запоминаем позицию
+                }
+            }
+        }
+    }
+
+    private bool IsPositionValidForDecoration(Vector2 position)
+    {
+        // Проверка расстояния до других объектов
+        foreach (Vector2 existingPos in decorationPositions)
+        {
+            if (Vector2.Distance(position, existingPos) < minDecorationDistance)
+            {
+                return false;
+            }
+        }
+
+        // Проверка, что не у стены
+        Vector2Int gridPos = new Vector2Int(Mathf.FloorToInt(position.x), Mathf.FloorToInt(position.y));
+        if (IsNearWall(gridPos))
+        {
+            return false;
+        }
+
+        // Проверка, что не в коридоре (если нужно)
+        if (IsPositionInCorridor(gridPos))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool IsPositionInCorridor(Vector2Int position)
+    {
+        foreach (Room room in rooms)
+        {
+            if (room.ContainsPosition(position))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private Vector2 GetRandomPositionInRoom(Room room)
@@ -466,11 +540,9 @@ public class DungeonGenerator : MonoBehaviour
     {
         if (rooms.Count > 0)
         {
-            playerSpawn.position = new Vector3(
-                rooms[0].position.x,
-                rooms[0].position.y,
-                0
-            );
+            Vector2 spawnPos = new Vector2(rooms[0].position.x, rooms[0].position.y);
+            playerSpawn.position = new Vector3(spawnPos.x, spawnPos.y, 0);
+            decorationPositions.Add(spawnPos); // Запоминаем позицию игрока
         }
     }
 
@@ -478,12 +550,10 @@ public class DungeonGenerator : MonoBehaviour
     {
         if (bossRoom != null && bossPrefab != null)
         {
-            GameObject boss = Instantiate(
-                bossPrefab,
-                new Vector3(bossRoom.position.x, bossRoom.position.y, 0),
-                Quaternion.identity
-            );
+            Vector2 bossPos = new Vector2(bossRoom.position.x, bossRoom.position.y);
+            GameObject boss = Instantiate(bossPrefab, bossPos, Quaternion.identity);
             spawnedObjects.Add(boss);
+            decorationPositions.Add(bossPos); // Запоминаем позицию босса
         }
         else
         {
@@ -503,6 +573,7 @@ public class DungeonGenerator : MonoBehaviour
         rooms.Clear();
         connections.Clear();
         bossRoom = null;
+        decorationPositions.Clear();
 
         floorMap.ClearAllTiles();
         wallMap.ClearAllTiles();
